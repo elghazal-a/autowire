@@ -13,6 +13,7 @@ import (
   "github.com/geniousphp/autowire/wireguard"
   "github.com/geniousphp/autowire/wg_quick"
   "github.com/geniousphp/autowire/ifconfig"
+  "github.com/geniousphp/autowire/util"
 )
 
 var kvPrefix = "autowire"
@@ -25,9 +26,6 @@ var wgRange = "192.168.150.0/24"
 var wgPort = 51820
 
 func main() {
-
-
-
   privKey, pubKey, err := initWgKeys(wgConfigFolder + "/" + wgInterfaceName)
   if err != nil {
     log.Fatal(err)
@@ -53,8 +51,7 @@ func main() {
     log.Fatal(err)
   }
 
-
-
+  monitorPeers(ConsulClient, physicalIpAddr)
 }
 
 
@@ -156,7 +153,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
         if(wireguard.IsWgInterfaceWellConfigured(newWgInterface)){
           fmt.Println("My interface is well configured")
-          monitorPeers(ConsulClient, physicalIpAddr)
+          return nil
         } else {
           fmt.Println("My interface is not well configured")
           wg_quick.StopInterface(wgInterfaceName)
@@ -219,11 +216,11 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
     wgIpStart := wgIpNet.IP
     //let's pick spare ip
-    incIp(wgIpStart) //Skip IP Network
+    util.IncIp(wgIpStart) //Skip IP Network
 
     //The loop goes over all ips in the network
-    for myFutureWgIp := wgIpStart; wgIpNet.Contains(myFutureWgIp); incIp(myFutureWgIp) {
-      if(contains(usedWgIps, myFutureWgIp.String())){
+    for myFutureWgIp := wgIpStart; wgIpNet.Contains(myFutureWgIp); util.IncIp(myFutureWgIp) {
+      if(util.SliceContains(usedWgIps, myFutureWgIp.String())){
         fmt.Println(myFutureWgIp.String(), "exist, skipping...")
       } else {
         fmt.Println("Found IP", myFutureWgIp)
@@ -262,7 +259,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
         // TODO: Check that ip we didn't pick broadcast IP
         // Check if there is no free ip left
-        // if(contains(usedWgIps, myFutureWgIp.String())){
+        // if(util.SliceContains(usedWgIps, myFutureWgIp.String())){
         //   return fmt.Errorf("There is no spare IP left in %s CIDR", wgRange)
         // }
 
@@ -351,8 +348,8 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
     log.Fatal(err)
     return
   }
-  printPeersMap(peers)
-  printPeersMap(newPeers)
+  util.PrintPeersMap(peers)
+  util.PrintPeersMap(newPeers)
 
   for physicalIpAddrKey, peer := range peers {
     
@@ -389,15 +386,7 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
 
 }
 
-func printPeersMap(peers map[string]map[string]string) {
-  fmt.Println("===========Peers==========")
-  for physicalIpAddrKey, peer := range peers {
-    for key, value := range peer {
-      fmt.Println(physicalIpAddrKey, key, value)
-    }
-  }
-  fmt.Println("==========================")
-}
+
 
 func monitorNodes(ConsulClient *api.Client, physicalIpAddr string, newNodesChan chan map[string]string, stopMonitorNodesChan chan bool) {
   opts := &api.LockOptions{
@@ -469,25 +458,5 @@ func removeLeftNodes(ConsulClient *api.Client, nodesPhysicalIpAddr map[string]st
     }
   }
 }
-
-func incIp(ip net.IP) {
-  for j := len(ip) - 1; j >= 0; j-- {
-    ip[j]++
-    if ip[j] > 0 {
-      break
-    }
-  }
-}
-
-
-func contains(a []string, x string) bool {
-  for _, n := range a {
-    if x == n {
-      return true
-    }
-  }
-  return false
-}
-
 
 
