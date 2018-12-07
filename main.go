@@ -31,7 +31,6 @@ func main() {
   if physicalIpAddr == "" {
     log.Fatal("Error while detecting network interface or Ip Address")
   }
-  fmt.Println(physicalIpAddr)
 
   privKey, pubKey, err := initWgKeys()
   if err != nil {
@@ -133,24 +132,31 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
   }
 
-  kvpair, _, err := ConsulKV.Get(config.LongKVPrefix + "nodes/" + physicalIpAddr + "/ip", nil)
+
+  myWgConfigMap := make(map[string]string)
+  myWgConfigKVPairs, _, err := ConsulKV.List(config.LongKVPrefix + "nodes/" + physicalIpAddr, nil)
   if err != nil {
     return err
   }
+  for _, myWgConfigKVPair := range myWgConfigKVPairs {
+    myWgConfigMap[myWgConfigKVPair.Key[strings.LastIndex(myWgConfigKVPair.Key, "/") + 1:]] = string(myWgConfigKVPair.Value[:])
+  }
 
-  if kvpair != nil {
-    myPickedWgAddr := string(kvpair.Value[:])
-    fmt.Println("I already picked wg ip and registred it into KV", myPickedWgAddr)
+  if myWgConfigKVPairs != nil {
+    fmt.Println("I already picked wg ip and registred it into KV", myWgConfigMap["ip"])
 
-    if(wgIpNet.Contains(net.ParseIP(myPickedWgAddr))){
-      fmt.Println("My picked wg ip fit in the range")
+    if(wgIpNet.Contains(net.ParseIP(myWgConfigMap["ip"])) &&
+      myWgConfigMap["port"] == strconv.Itoa(config.WGPort) &&
+      myWgConfigMap["pubkey"] == pubKey) {
+
+      fmt.Println("My registred configurations are consistent")
 
       started, err := ifconfig.IsInterfaceStarted(config.WGInterfaceName)
       if err != nil {
         return err
       }
       maskBits, _ := wgIpNet.Mask.Size()
-      newWgInterface := wireguard.Interface{config.WGInterfaceName, fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), config.WGPort, privKey}
+      newWgInterface := wireguard.Interface{config.WGInterfaceName, fmt.Sprintf("%s/%d", myWgConfigMap["ip"], maskBits), config.WGPort, privKey}
       if(started){
         fmt.Println("I already started my wg interface")
 
@@ -173,7 +179,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
 
     } else {
-      fmt.Println("My picked wg ip out of range")
+      fmt.Println("My registred configurations are not consistent")
       _, err := ConsulKV.DeleteTree(config.LongKVPrefix + "nodes/" + physicalIpAddr, nil)
       if err != nil {
         return err
