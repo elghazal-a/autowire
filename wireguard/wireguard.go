@@ -96,7 +96,9 @@ func IsWgInterfaceWellConfigured(wgConfig WGConfig) (bool) {
 
   // Check consistency with wg show wg0 (Port and Private Key)
   result, _ := wg(nil, "show", wgConfig.Interface.Name, "dump")
-  currentWgConfig := strings.Split(string(result[:]), "\t")
+  currentWgConfigString := strings.Split(string(result[:]), "\n")[0]
+  // fmt.Println(currentWgConfigString)
+  currentWgConfig := strings.Split(currentWgConfigString, "\t")
 
   if(currentWgConfig[0] != wgConfig.Interface.PrivateKey){
     return false
@@ -110,16 +112,45 @@ func IsWgInterfaceWellConfigured(wgConfig WGConfig) (bool) {
   return true
 }
 
+func GetPeers(wgInterfaceName string) (map[string]map[string]string, error) {
+  result, err := wg(nil, "show", wgInterfaceName, "dump")
+  if err != nil {
+    return nil, fmt.Errorf("error getting peers list for wireguard: %s", err.Error())
+  }
+
+  peers := make(map[string]map[string]string)
+  wgPeersString := strings.Split(string(result[:]), "\n")
+  for i, wgPeerString := range wgPeersString {
+    if(i == 0) {
+      //Skip the fist line config which is interfacz config
+      continue
+    }
+    if(wgPeerString == "") {
+      //empty line, skip it
+      continue
+    }
+    currentWgConfig := strings.Split(wgPeerString, "\t")
+    physicalIpAddr := strings.Split(currentWgConfig[2], ":")[0]
+    peers[physicalIpAddr] = make(map[string]string)
+    peers[physicalIpAddr]["endpoint"] = physicalIpAddr
+    peers[physicalIpAddr]["port"] = strings.Split(currentWgConfig[2], ":")[1]
+    peers[physicalIpAddr]["pubkey"] = currentWgConfig[0]
+    peers[physicalIpAddr]["allowedips"] = currentWgConfig[3]
+  }
+
+  return peers, nil
+}
+
 func ConfigurePeer(wgInterfaceName string, peer map[string]string) ([]byte, error) {
-  result, err := wg(nil, "set", wgInterfaceName, "peer", peer["pubKey"], "endpoint", peer["endpoint"] + ":" + peer["port"], "allowed-ips", peer["allowedips"])
+  result, err := wg(nil, "set", wgInterfaceName, "peer", peer["pubkey"], "endpoint", peer["endpoint"] + ":" + peer["port"], "allowed-ips", peer["allowedips"])
   if err != nil {
     return nil, fmt.Errorf("error configuring wg peer: %s", err.Error())
   }
   return result, nil
 }
 
-func RemovePeer(wgInterfaceName string, peer map[string]string) ([]byte, error) {
-  result, err := wg(nil, "set", wgInterfaceName, "peer", peer["pubKey"], "remove")
+func RemovePeer(wgInterfaceName string, pubKey string) ([]byte, error) {
+  result, err := wg(nil, "set", wgInterfaceName, "peer", pubKey, "remove")
   if err != nil {
     return nil, fmt.Errorf("error removing wg peer: %s", err.Error())
   }

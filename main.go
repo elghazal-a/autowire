@@ -246,7 +246,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           },
           &api.KVTxnOp{
             Verb:    api.KVSet,
-            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/pubKey",
+            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/pubkey",
             Value:   []byte(pubKey),
           },
           &api.KVTxnOp{
@@ -288,7 +288,6 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
 
 func monitorPeers(ConsulClient *api.Client, physicalIpAddr string) {
-  peers := make(map[string]map[string]string)
   stopMonitorKvPrefixchan := make(chan bool)
   stopMonitorNodesChan := make(chan bool)
   newPeerschan := make(chan map[string]map[string]string)
@@ -302,13 +301,12 @@ func monitorPeers(ConsulClient *api.Client, physicalIpAddr string) {
         fmt.Println("monitorKvPrefix goroutine stopped")
       case newPeers := <-newPeerschan:
         fmt.Println("received new peers from monitorKvPrefix goroutine")
-        configureWgPeers(physicalIpAddr, peers, newPeers)
+        configureWgPeers(physicalIpAddr, newPeers)
       case <-stopMonitorNodesChan:
         fmt.Println("monitorNodes goroutine stopped")
       case nodesPhysicalIpAddr := <-newNodesChan:
         fmt.Println("received new nodes")
-        removeLeftNodes(ConsulClient, peers, nodesPhysicalIpAddr)
-        printPeersMap(peers)
+        removeLeftNodes(ConsulClient, nodesPhysicalIpAddr)
 
     }
   }
@@ -319,12 +317,12 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
   var ConsulKV *api.KV
   ConsulKV = ConsulClient.KV()
 
-  newPeers := make(map[string]map[string]string)
-
+  var newPeers map[string]map[string]string
   var waitIndex uint64
   waitIndex = 0
 
   for {
+    newPeers = make(map[string]map[string]string)
     opts := api.QueryOptions{
       AllowStale: false, 
       RequireConsistent: true, 
@@ -356,21 +354,25 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
   stopMonitorKvPrefixChan <- true
 }
 
-func configureWgPeers(myPhysicalIpAddr string, peers map[string]map[string]string, newPeers map[string]map[string]string) {
+func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]string) {
+  peers, err := wireguard.GetPeers(wgInterfaceName)
+  if err != nil {
+    log.Fatal(err)
+    return
+  }
+  printPeersMap(peers)
+  printPeersMap(newPeers)
 
   for physicalIpAddrKey, peer := range peers {
-    // peer doesn't exit in newPeers anymore
-    if _, ok := newPeers[physicalIpAddrKey]; !ok {
+    
+    if _, ok := newPeers[physicalIpAddrKey]; !ok { // peer doesn't exit in newPeers anymore
       fmt.Println("Removing a peer that doesn't exist anymore")
-      wireguard.RemovePeer(wgInterfaceName, peer)
-      delete(peers, physicalIpAddrKey)
+      wireguard.RemovePeer(wgInterfaceName, peer["pubkey"])
     } else {
-      if(peer["pubKey"] != newPeers[physicalIpAddrKey]["pubKey"]){
+      if(peer["pubkey"] != newPeers[physicalIpAddrKey]["pubkey"]){
         fmt.Println("Reconfiguring a Peer that has same endpoint and different public key")
-        wireguard.RemovePeer(wgInterfaceName, peer)
-        delete(peers, physicalIpAddrKey)
+        wireguard.RemovePeer(wgInterfaceName, peer["pubkey"])
         wireguard.ConfigurePeer(wgInterfaceName, peer)
-        peers[physicalIpAddrKey] = peer
       } else {
         if(peer["allowedips"] != newPeers[physicalIpAddrKey]["allowedips"] || 
           peer["port"] != newPeers[physicalIpAddrKey]["port"] || 
@@ -378,38 +380,32 @@ func configureWgPeers(myPhysicalIpAddr string, peers map[string]map[string]strin
 
           fmt.Println("Reconfiguring a Peer that changes its params")
           wireguard.ConfigurePeer(wgInterfaceName, peer)
-          peers[physicalIpAddrKey]["allowedips"] = newPeers[physicalIpAddrKey]["allowedips"]
-          peers[physicalIpAddrKey]["port"] = newPeers[physicalIpAddrKey]["port"]
-          peers[physicalIpAddrKey]["endpoint"] = newPeers[physicalIpAddrKey]["endpoint"]
-          
         }
       }
     }
   }
 
-
   for physicalIpAddrKey, peer := range newPeers {
-    // If physicalIpAddrKey is my ip, skip it
-    if(myPhysicalIpAddr == physicalIpAddrKey){
+    if(myPhysicalIpAddr == physicalIpAddrKey){ // If physicalIpAddrKey is my ip, skip it
       continue
     }
 
-    // new peer doesn't exist in peers
-    if _, ok := peers[physicalIpAddrKey]; !ok {
+    if _, ok := peers[physicalIpAddrKey]; !ok { // new peer doesn't exist in peers
       fmt.Println("Adding New Peer")
       wireguard.ConfigurePeer(wgInterfaceName, peer)
-      peers[physicalIpAddrKey] = peer
     }
   }
 
 }
 
 func printPeersMap(peers map[string]map[string]string) {
+  fmt.Println("===========Peers==========")
   for physicalIpAddrKey, peer := range peers {
     for key, value := range peer {
       fmt.Println(physicalIpAddrKey, key, value)
     }
   }
+  fmt.Println("==========================")
 }
 
 func monitorNodes(ConsulClient *api.Client, physicalIpAddr string, newNodesChan chan map[string]string, stopMonitorNodesChan chan bool) {
@@ -463,11 +459,17 @@ func monitorNodes(ConsulClient *api.Client, physicalIpAddr string, newNodesChan 
   stopMonitorNodesChan <- true
 }
 
-func removeLeftNodes(ConsulClient *api.Client, peers map[string]map[string]string, nodesPhysicalIpAddr map[string]string) {
+func removeLeftNodes(ConsulClient *api.Client, nodesPhysicalIpAddr map[string]string) {
   var ConsulKV *api.KV
   ConsulKV = ConsulClient.KV()
+
+  peers, err := wireguard.GetPeers(wgInterfaceName)
+  if err != nil {
+    log.Fatal(err)
+    return
+  }
   for physicalIpAddrKey, _ := range peers {
-    if _, ok := nodesPhysicalIpAddr[physicalIpAddrKey]; !ok {
+    if _, ok := nodesPhysicalIpAddr[physicalIpAddrKey]; !ok { //Peer doesn't exist in Consul Catalog anymore
       fmt.Println("Release node IP from the pool")
       _, err := ConsulKV.DeleteTree(longKvPrefix + "nodes/" + physicalIpAddrKey, nil)
       if err != nil {
