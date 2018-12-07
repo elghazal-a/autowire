@@ -1,7 +1,7 @@
 package main
 
 import (
-  "fmt"       // A package in the Go standard library.
+  "fmt"
   "net"
   "log"
   "os"
@@ -9,6 +9,7 @@ import (
   "time"
   "strconv"
   "strings"
+  "flag"
   "github.com/hashicorp/consul/api"
   "github.com/geniousphp/autowire/wireguard"
   "github.com/geniousphp/autowire/wg_quick"
@@ -16,24 +17,21 @@ import (
   "github.com/geniousphp/autowire/util"
 )
 
-var kvPrefix = "autowire"
-var wgInterfaceName = "wg0"
-var longKvPrefix = kvPrefix + "/" + wgInterfaceName + "/"
-
-var wgConfigFolder = "/etc/autowire"
-var interfaceName = "enp0s8"
-var wgRange = "192.168.150.0/24"
-var wgPort = 51820
-
 func main() {
-  privKey, pubKey, err := initWgKeys(wgConfigFolder + "/" + wgInterfaceName)
+  flag.Parse()
+  if err := initConfig(); err != nil {
+    log.Fatal(err.Error())
+  }
+  log.Print("Starting Autowire")
+
+  privKey, pubKey, err := initWgKeys()
   if err != nil {
     log.Fatal(err)
   }
   log.Println(privKey)
   log.Println(pubKey)
 
-  physicalIpAddr, err := getPhysicalIpAddr(interfaceName)
+  physicalIpAddr, err := getPhysicalIpAddr()
   if err != nil {
     log.Fatal(err)
   }
@@ -55,7 +53,8 @@ func main() {
 }
 
 
-func initWgKeys(wgInterfaceConfigFolder string) (string, string, error) {
+func initWgKeys() (string, string, error) {
+  wgInterfaceConfigFolder := config.WGConfigFolder + "/" + config.WGInterfaceName
   if _, err := os.Stat(wgInterfaceConfigFolder + "/private"); os.IsNotExist(err) {
     err := os.MkdirAll(wgInterfaceConfigFolder, 0700)
 
@@ -86,10 +85,10 @@ func initWgKeys(wgInterfaceConfigFolder string) (string, string, error) {
   }
 
   return strings.TrimSuffix(string(privKey[:]), "\n"), strings.TrimSuffix(string(pubKey[:]), "\n"), nil
-  // return privKey, pubKey, nil
 }
 
-func getPhysicalIpAddr(interfaceName string) (string, error) {
+func getPhysicalIpAddr() (string, error) {
+  interfaceName := "enp0s8"
   if(interfaceName == ""){
     // TODO: If interfaceName is empty, return the first address of the first interface
     return "", nil
@@ -109,7 +108,7 @@ func getPhysicalIpAddr(interfaceName string) (string, error) {
 
 
 func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string, pubKey string) error{
-  _, wgIpNet, err := net.ParseCIDR(wgRange)
+  _, wgIpNet, err := net.ParseCIDR(config.WGRange)
   if err != nil {
     return err
   }
@@ -117,20 +116,20 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
   var ConsulKV *api.KV
   ConsulKV = ConsulClient.KV()
 
-  kvpairsWgRange, _, err := ConsulKV.Get(longKvPrefix + "range", nil)
+  kvpairsWgRange, _, err := ConsulKV.Get(config.LongKVPrefix + "range", nil)
   if err != nil {
     return err
   }
-  if kvpairsWgRange == nil || string(kvpairsWgRange.Value[:]) != wgRange {
+  if kvpairsWgRange == nil || string(kvpairsWgRange.Value[:]) != config.WGRange {
     log.Println("The wireguard IP range doesn't exist, willing to create it right now")
-    _, err := ConsulKV.Put(&api.KVPair{Key: longKvPrefix + "range", Value: []byte(wgRange)}, nil)
+    _, err := ConsulKV.Put(&api.KVPair{Key: config.LongKVPrefix + "range", Value: []byte(config.WGRange)}, nil)
     if err != nil {
       return err
     }
 
   }
 
-  kvpair, _, err := ConsulKV.Get(longKvPrefix + "nodes/" + physicalIpAddr + "/ip", nil)
+  kvpair, _, err := ConsulKV.Get(config.LongKVPrefix + "nodes/" + physicalIpAddr + "/ip", nil)
   if err != nil {
     return err
   }
@@ -142,12 +141,12 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
     if(wgIpNet.Contains(net.ParseIP(myPickedWgAddr))){
       fmt.Println("My picked wg ip fit in the range")
 
-      started, err := ifconfig.IsInterfaceStarted(wgInterfaceName)
+      started, err := ifconfig.IsInterfaceStarted(config.WGInterfaceName)
       if err != nil {
         return err
       }
       maskBits, _ := wgIpNet.Mask.Size()
-      newWgInterface := wireguard.Interface{wgInterfaceName, fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), wgPort, privKey}
+      newWgInterface := wireguard.Interface{config.WGInterfaceName, fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), config.WGPort, privKey}
       if(started){
         fmt.Println("I already started my wg interface")
 
@@ -156,7 +155,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           return nil
         } else {
           fmt.Println("My interface is not well configured")
-          wg_quick.StopInterface(wgInterfaceName)
+          wg_quick.StopInterface(config.WGInterfaceName)
           return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
         }
 
@@ -164,14 +163,14 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
       } else {
         fmt.Println("Will bring up my wg interface")
         wireguard.ConfigureInterface(newWgInterface)
-        wg_quick.StartInterface(wgInterfaceName)
+        wg_quick.StartInterface(config.WGInterfaceName)
         return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
       }
 
 
     } else {
       fmt.Println("My picked wg ip out of range")
-      _, err := ConsulKV.DeleteTree(longKvPrefix + "nodes/" + physicalIpAddr, nil)
+      _, err := ConsulKV.DeleteTree(config.LongKVPrefix + "nodes/" + physicalIpAddr, nil)
       if err != nil {
         return err
       }
@@ -183,7 +182,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
     fmt.Println("I didn't yet picked an IP from RANGE")
 
     opts := &api.LockOptions{
-      Key:        longKvPrefix + "pick-ip-lock",
+      Key:        config.LongKVPrefix + "pick-ip-lock",
       Value:      []byte(physicalIpAddr),
       SessionOpts: &api.SessionEntry{
         Behavior: "release",
@@ -204,7 +203,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
 
     //get all the picked ip
-    kvpairsNodes, _, err := ConsulKV.List(longKvPrefix + "nodes", &api.QueryOptions{AllowStale: false, RequireConsistent: true, UseCache: false})
+    kvpairsNodes, _, err := ConsulKV.List(config.LongKVPrefix + "nodes", &api.QueryOptions{AllowStale: false, RequireConsistent: true, UseCache: false})
     if err != nil {
       return err
     }
@@ -229,22 +228,22 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
         nodeKVTxnOps := api.KVTxnOps{
           &api.KVTxnOp{
             Verb:    api.KVSet,
-            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/ip",
+            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/ip",
             Value:   []byte(myFutureWgIp.String()),
           },
           &api.KVTxnOp{
             Verb:    api.KVSet,
-            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/pubkey",
+            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/pubkey",
             Value:   []byte(pubKey),
           },
           &api.KVTxnOp{
             Verb:    api.KVSet,
-            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/port",
-            Value:   []byte(strconv.Itoa(wgPort)),
+            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/port",
+            Value:   []byte(strconv.Itoa(config.WGPort)),
           },
           &api.KVTxnOp{
             Verb:    api.KVSet,
-            Key:     longKvPrefix + "nodes/" + physicalIpAddr + "/allowedips",
+            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/allowedips",
             Value:   []byte(myFutureWgIp.String() + "/32"),
           },
         }
@@ -260,7 +259,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
         // TODO: Check that ip we didn't pick broadcast IP
         // Check if there is no free ip left
         // if(util.SliceContains(usedWgIps, myFutureWgIp.String())){
-        //   return fmt.Errorf("There is no spare IP left in %s CIDR", wgRange)
+        //   return fmt.Errorf("There is no spare IP left in %s CIDR", config.WGRange)
         // }
 
         return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
@@ -318,7 +317,7 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
       WaitIndex: waitIndex,
     }
     fmt.Println("Will watch consul kv prefix in blocking query now", waitIndex)
-    kvpairsNodes, meta, err := ConsulKV.List(longKvPrefix + "nodes", &opts)
+    kvpairsNodes, meta, err := ConsulKV.List(config.LongKVPrefix + "nodes", &opts)
     if err != nil {
       // Prevent backend errors from consuming all resources.
       log.Fatal(err)
@@ -343,7 +342,7 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
 }
 
 func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]string) {
-  peers, err := wireguard.GetPeers(wgInterfaceName)
+  peers, err := wireguard.GetPeers(config.WGInterfaceName)
   if err != nil {
     log.Fatal(err)
     return
@@ -355,19 +354,19 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
     
     if _, ok := newPeers[physicalIpAddrKey]; !ok { // peer doesn't exit in newPeers anymore
       fmt.Println("Removing a peer that doesn't exist anymore")
-      wireguard.RemovePeer(wgInterfaceName, peer["pubkey"])
+      wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
     } else {
       if(peer["pubkey"] != newPeers[physicalIpAddrKey]["pubkey"]){
         fmt.Println("Reconfiguring a Peer that has same endpoint and different public key")
-        wireguard.RemovePeer(wgInterfaceName, peer["pubkey"])
-        wireguard.ConfigurePeer(wgInterfaceName, peer)
+        wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
+        wireguard.ConfigurePeer(config.WGInterfaceName, peer)
       } else {
         if(peer["allowedips"] != newPeers[physicalIpAddrKey]["allowedips"] || 
           peer["port"] != newPeers[physicalIpAddrKey]["port"] || 
           peer["endpoint"] != newPeers[physicalIpAddrKey]["endpoint"]){
 
           fmt.Println("Reconfiguring a Peer that changes its params")
-          wireguard.ConfigurePeer(wgInterfaceName, peer)
+          wireguard.ConfigurePeer(config.WGInterfaceName, peer)
         }
       }
     }
@@ -380,7 +379,7 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
 
     if _, ok := peers[physicalIpAddrKey]; !ok { // new peer doesn't exist in peers
       fmt.Println("Adding New Peer")
-      wireguard.ConfigurePeer(wgInterfaceName, peer)
+      wireguard.ConfigurePeer(config.WGInterfaceName, peer)
     }
   }
 
@@ -390,7 +389,7 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
 
 func monitorNodes(ConsulClient *api.Client, physicalIpAddr string, newNodesChan chan map[string]string, stopMonitorNodesChan chan bool) {
   opts := &api.LockOptions{
-    Key:        longKvPrefix + "monitor-nodes-lock",
+    Key:        config.LongKVPrefix + "monitor-nodes-lock",
     Value:      []byte(physicalIpAddr),
     SessionOpts: &api.SessionEntry{
       Behavior: "release",
@@ -443,7 +442,7 @@ func removeLeftNodes(ConsulClient *api.Client, nodesPhysicalIpAddr map[string]st
   var ConsulKV *api.KV
   ConsulKV = ConsulClient.KV()
 
-  peers, err := wireguard.GetPeers(wgInterfaceName)
+  peers, err := wireguard.GetPeers(config.WGInterfaceName)
   if err != nil {
     log.Fatal(err)
     return
@@ -451,7 +450,7 @@ func removeLeftNodes(ConsulClient *api.Client, nodesPhysicalIpAddr map[string]st
   for physicalIpAddrKey, _ := range peers {
     if _, ok := nodesPhysicalIpAddr[physicalIpAddrKey]; !ok { //Peer doesn't exist in Consul Catalog anymore
       fmt.Println("Release node IP from the pool")
-      _, err := ConsulKV.DeleteTree(longKvPrefix + "nodes/" + physicalIpAddrKey, nil)
+      _, err := ConsulKV.DeleteTree(config.LongKVPrefix + "nodes/" + physicalIpAddrKey, nil)
       if err != nil {
         log.Fatal(err)
       }
