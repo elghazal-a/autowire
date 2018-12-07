@@ -21,7 +21,7 @@ var longKvPrefix = kvPrefix + "/" + wgInterfaceName + "/"
 
 var wgConfigFolder = "/etc/autowire"
 var interfaceName = "enp0s8"
-var wgRange = "192.168.200.0/24"
+var wgRange = "192.168.150.0/24"
 var wgPort = 51820
 
 func main() {
@@ -150,20 +150,11 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
         return err
       }
       maskBits, _ := wgIpNet.Mask.Size()
-      // newWgInterface := wireguard.Interface{wgInterfaceName, fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), wgPort, privKey}
-      newWGConfig := wireguard.WGConfig{
-        Interface: wireguard.Interface{
-          Name: wgInterfaceName, 
-          Address: fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), 
-          ListenPort: wgPort, 
-          PrivateKey: privKey,
-        },
-        Peers: make(map[string]wireguard.Peer),
-      } 
+      newWgInterface := wireguard.Interface{wgInterfaceName, fmt.Sprintf("%s/%d", myPickedWgAddr, maskBits), wgPort, privKey}
       if(started){
         fmt.Println("I already started my wg interface")
 
-        if(wireguard.IsWgInterfaceWellConfigured(newWGConfig)){
+        if(wireguard.IsWgInterfaceWellConfigured(newWgInterface)){
           fmt.Println("My interface is well configured")
           monitorPeers(ConsulClient, physicalIpAddr)
         } else {
@@ -175,7 +166,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
       } else {
         fmt.Println("Will bring up my wg interface")
-        wireguard.ConfigureInterface(newWGConfig)
+        wireguard.ConfigureInterface(newWgInterface)
         wg_quick.StartInterface(wgInterfaceName)
         return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
       }

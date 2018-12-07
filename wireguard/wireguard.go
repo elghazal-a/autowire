@@ -19,18 +19,6 @@ type Interface struct {
   PrivateKey string
 }
 
-type Peer struct {
-  PublicKey  string
-  Ip         string
-  AllowedIPs string
-  Endpoint   string
-  Port       int
-}
-
-type WGConfig struct {
-  Interface Interface
-  Peers     map[string]Peer
-}
 
 func wg(stdin io.Reader, arg ...string) ([]byte, error) {
   path, err := exec.LookPath("wg")
@@ -70,15 +58,15 @@ func ExtractPubKey(privateKey []byte) ([]byte, error) {
 }
 
 
-func ConfigureInterface(wgConfig WGConfig) (error) {
-  configFile, err := os.Create("/etc/wireguard/" + wgConfig.Interface.Name + ".conf")
+func ConfigureInterface(wgInterface Interface) (error) {
+  configFile, err := os.Create("/etc/wireguard/" + wgInterface.Name + ".conf")
   if err != nil {
     return err
   }
 
   t := template.Must(template.New("config").Parse(wgConfigTemplate))
 
-  err = t.Execute(configFile, wgConfig.Interface)
+  err = t.Execute(configFile, wgInterface)
   if err != nil {
     return err
   }
@@ -87,25 +75,25 @@ func ConfigureInterface(wgConfig WGConfig) (error) {
   return nil
 }
 
-func IsWgInterfaceWellConfigured(wgConfig WGConfig) (bool) {
+func IsWgInterfaceWellConfigured(wgInterface Interface) (bool) {
   // Check consistency with ip addr show dev wg0 (IP Address)
-  actualIpAddr, _ := ifconfig.GetIpOfIf(wgConfig.Interface.Name)
-  if(actualIpAddr != wgConfig.Interface.Address){
+  actualIpAddr, _ := ifconfig.GetIpOfIf(wgInterface.Name)
+  if(actualIpAddr != wgInterface.Address){
     return false
   }
 
   // Check consistency with wg show wg0 (Port and Private Key)
-  result, _ := wg(nil, "show", wgConfig.Interface.Name, "dump")
+  result, _ := wg(nil, "show", wgInterface.Name, "dump")
   currentWgConfigString := strings.Split(string(result[:]), "\n")[0]
   // fmt.Println(currentWgConfigString)
   currentWgConfig := strings.Split(currentWgConfigString, "\t")
 
-  if(currentWgConfig[0] != wgConfig.Interface.PrivateKey){
+  if(currentWgConfig[0] != wgInterface.PrivateKey){
     return false
   }
 
   currentWgPort, _ := strconv.Atoi(currentWgConfig[2])
-  if(currentWgPort != wgConfig.Interface.ListenPort){
+  if(currentWgPort != wgInterface.ListenPort){
     return false
   }
 
