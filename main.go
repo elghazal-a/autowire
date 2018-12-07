@@ -24,19 +24,18 @@ func main() {
   }
   log.Print("Starting Autowire")
 
-  privKey, pubKey, err := initWgKeys()
-  if err != nil {
-    log.Fatal(err)
-  }
-  log.Println(privKey)
-  log.Println(pubKey)
-
   physicalIpAddr, err := getPhysicalIpAddr()
   if err != nil {
     log.Fatal(err)
   }
   if physicalIpAddr == "" {
     log.Fatal("Error while detecting network interface or Ip Address")
+  }
+  fmt.Println(physicalIpAddr)
+
+  privKey, pubKey, err := initWgKeys()
+  if err != nil {
+    log.Fatal(err)
   }
 
   conf := api.DefaultConfig()
@@ -88,17 +87,22 @@ func initWgKeys() (string, string, error) {
 }
 
 func getPhysicalIpAddr() (string, error) {
-  interfaceName := "enp0s8"
-  if(interfaceName == ""){
-    // TODO: If interfaceName is empty, return the first address of the first interface
-    return "", nil
-  }
-  inet, err := ifconfig.GetIpOfIf(interfaceName)
-  if err != nil {
-    return "", err
+  var myInet string
+  if(config.InterfaceName == ""){
+    inet, err := ifconfig.GetFirstIpOfFirtIf()
+    if err != nil {
+      return "", err
+    }
+    myInet = inet
+  } else {
+    inet, err := ifconfig.GetIpOfIf(config.InterfaceName)
+    if err != nil {
+      return "", err
+    }
+    myInet = inet
   }
 
-  ipAddr, _, err := net.ParseCIDR(inet)
+  ipAddr, _, err := net.ParseCIDR(myInet)
   if err != nil {
     return "", err
   }

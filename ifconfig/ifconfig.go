@@ -1,7 +1,7 @@
 package ifconfig
 
 import (
-  // "fmt"
+  "fmt"
   "net"
 
 )
@@ -15,13 +15,10 @@ func GetIpOfIf(interfaceName string) (string, error) {
   }
 
   if len(ifaces) <= 0 {
-    return "", nil
+    return "", fmt.Errorf("No network interface found")
   }
 
-  // TODO: If interface doesn't exist or exist and no ip found return error
-
   for _, i := range ifaces {
-    // fmt.Println(i.Name)
     if i.Name == interfaceName {
       addrs, err := i.Addrs()
       if err != nil {
@@ -32,7 +29,34 @@ func GetIpOfIf(interfaceName string) (string, error) {
       }
     }
   }
-  return "", nil
+  return "", fmt.Errorf("The network interface %s not found or doesn't have any ip address", interfaceName)
+}
+
+func GetFirstIpOfFirtIf() (string, error) {
+  ifaces, err := net.Interfaces()
+  if err != nil {
+    return "", err
+  }
+
+  if len(ifaces) <= 0 {
+    return "", fmt.Errorf("No network interface found")
+  }
+
+  for _, iface := range ifaces {
+    if(iface.Name == "lo") {
+      continue
+    }
+    addrs, err := iface.Addrs()
+    if err != nil {
+      return "", err
+    }
+    if len(addrs) > 0 {
+      return addrs[0].String(), err
+    }
+    
+  }
+
+  return "", fmt.Errorf("No network interface or ip address found")
 }
 
 
