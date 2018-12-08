@@ -147,7 +147,8 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
     if(wgIpNet.Contains(net.ParseIP(myWgConfigMap["ip"])) &&
       myWgConfigMap["port"] == strconv.Itoa(config.WGPort) &&
-      myWgConfigMap["pubkey"] == pubKey) {
+      myWgConfigMap["pubkey"] == pubKey &&
+      myWgConfigMap["allowedips"] == myWgConfigMap["ip"] + "/32" + config.WGAllowedIPs) {
 
       fmt.Println("My registred configurations are consistent")
 
@@ -254,7 +255,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           &api.KVTxnOp{
             Verb:    api.KVSet,
             Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/allowedips",
-            Value:   []byte(myFutureWgIp.String() + "/32"),
+            Value:   []byte(myFutureWgIp.String() + "/32" + config.WGAllowedIPs),
           },
         }
         ok, _, _, err := ConsulKV.Txn(nodeKVTxnOps, nil)
@@ -371,7 +372,7 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
         wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
         wireguard.ConfigurePeer(config.WGInterfaceName, peer)
       } else {
-        if(peer["allowedips"] != newPeers[physicalIpAddrKey]["allowedips"] || 
+        if(!util.IsTheSameAllowedips(peer["allowedips"], newPeers[physicalIpAddrKey]["allowedips"]) || 
           peer["port"] != newPeers[physicalIpAddrKey]["port"] || 
           peer["endpoint"] != newPeers[physicalIpAddrKey]["endpoint"]){
 
