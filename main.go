@@ -166,15 +166,24 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           return nil
         } else {
           fmt.Println("My interface is not well configured")
-          wg_quick.StopInterface(config.WGInterfaceName)
+          _, err = wg_quick.StopInterface(config.WGInterfaceName)
+          if(err != nil){
+            return err
+          }
           return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
         }
 
 
       } else {
         fmt.Println("Will bring up my wg interface")
-        wireguard.ConfigureInterface(newWgInterface)
-        wg_quick.StartInterface(config.WGInterfaceName)
+        err = wireguard.ConfigureInterface(newWgInterface)
+        if(err != nil){
+          return err
+        }
+        _, err = wg_quick.StartInterface(config.WGInterfaceName)
+        if(err != nil){
+          return err
+        }
         return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
       }
 
@@ -365,19 +374,31 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
     
     if _, ok := newPeers[physicalIpAddrKey]; !ok { // peer doesn't exit in newPeers anymore
       fmt.Println("Removing a peer that doesn't exist anymore")
-      wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
+      _, err = wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
+      if(err != nil){
+        log.Fatal(err)
+      }
     } else {
       if(peer["pubkey"] != newPeers[physicalIpAddrKey]["pubkey"]){
         fmt.Println("Reconfiguring a Peer that has same endpoint and different public key")
-        wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
-        wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+        _, err = wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
+        if(err != nil){
+          log.Fatal(err)
+        }
+        _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+        if(err != nil){
+          log.Fatal(err)
+        }
       } else {
         if(!util.IsTheSameAllowedips(peer["allowedips"], newPeers[physicalIpAddrKey]["allowedips"]) || 
           peer["port"] != newPeers[physicalIpAddrKey]["port"] || 
           peer["endpoint"] != newPeers[physicalIpAddrKey]["endpoint"]){
 
           fmt.Println("Reconfiguring a Peer that changes its params")
-          wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+          _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+          if(err != nil){
+            log.Fatal(err)
+          }
         }
       }
     }
@@ -390,7 +411,10 @@ func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]st
 
     if _, ok := peers[physicalIpAddrKey]; !ok { // new peer doesn't exist in peers
       fmt.Println("Adding New Peer")
-      wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+      _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
+      if(err != nil){
+        log.Fatal(err)
+      }
     }
   }
 
