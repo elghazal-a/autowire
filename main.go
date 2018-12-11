@@ -10,6 +10,8 @@ import (
   "strconv"
   "strings"
   "flag"
+  "os/exec"
+  "bytes"
   "github.com/hashicorp/consul/api"
   "github.com/geniousphp/autowire/wireguard"
   "github.com/geniousphp/autowire/ifconfig"
@@ -147,7 +149,8 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
     if(wgIpNet.Contains(net.ParseIP(myWgConfigMap["ip"])) &&
       myWgConfigMap["port"] == strconv.Itoa(config.WGPort) &&
       myWgConfigMap["pubkey"] == pubKey &&
-      myWgConfigMap["allowedips"] == myWgConfigMap["ip"] + "/32" + config.WGAllowedIPs) {
+      myWgConfigMap["allowedips"] == myWgConfigMap["ip"] + "/32" + config.WGAllowedIPs &&
+      myWgConfigMap["postup"] == config.WGPostUp) {
 
       fmt.Println("My registred configurations are consistent")
 
@@ -156,13 +159,18 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
         return err
       }
       maskBits, _ := wgIpNet.Mask.Size()
-      newWgInterface := wireguard.Interface{config.WGInterfaceName, fmt.Sprintf("%s/%d", myWgConfigMap["ip"], maskBits), config.WGPort, privKey}
+      newWgInterface := wireguard.Interface{
+        Name: config.WGInterfaceName, 
+        Address: fmt.Sprintf("%s/%d", myWgConfigMap["ip"], maskBits), 
+        ListenPort: config.WGPort, 
+        PrivateKey: privKey,
+        PostUp: config.WGPostUp,
+      }
       if(started){
         fmt.Println("I already started my wg interface")
 
         if(wireguard.IsWgInterfaceWellConfigured(newWgInterface)){
           fmt.Println("My interface is well configured")
-          return nil
         } else {
           fmt.Println("My interface is not well configured")
           _, err = ifconfig.StopWGInterface(config.WGInterfaceName)
@@ -171,8 +179,6 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           }
           return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
         }
-
-
       } else {
         fmt.Println("Will bring up my wg interface")
         _, err = ifconfig.StartWGInterface(newWgInterface.Name, newWgInterface.Address)
@@ -186,6 +192,19 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
         return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
       }
 
+      // Whether the interface was started or has just started, run PostUp, it should be idempotent
+      fmt.Println("Running PostUp")
+      if(newWgInterface.PostUp != ""){
+        cmd := exec.Command("sh", "-c", newWgInterface.PostUp)
+        var buf bytes.Buffer
+        cmd.Stderr = &buf
+        output, err := cmd.Output()
+        if(err != nil){
+          return fmt.Errorf("error running postUp commands: %s", err.Error(), buf.String())
+        }
+        fmt.Println(string(output[:]))
+      }
+      return nil
 
     } else {
       fmt.Println("My registred configurations are not consistent")
@@ -264,6 +283,11 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
             Verb:    api.KVSet,
             Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/allowedips",
             Value:   []byte(myFutureWgIp.String() + "/32" + config.WGAllowedIPs),
+          },
+          &api.KVTxnOp{
+            Verb:    api.KVSet,
+            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/postup",
+            Value:   []byte(config.WGPostUp),
           },
         }
         ok, _, _, err := ConsulKV.Txn(nodeKVTxnOps, nil)

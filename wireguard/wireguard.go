@@ -17,6 +17,7 @@ type Interface struct {
   Address string
   ListenPort int
   PrivateKey string
+  PostUp string
 }
 
 
