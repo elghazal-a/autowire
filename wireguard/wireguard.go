@@ -58,21 +58,26 @@ func ExtractPubKey(privateKey []byte) ([]byte, error) {
 }
 
 
-func ConfigureInterface(wgInterface Interface) (error) {
+func ConfigureInterface(wgInterface Interface) ([]byte, error) {
   configFile, err := os.Create("/etc/wireguard/" + wgInterface.Name + ".conf")
   if err != nil {
-    return err
+    return nil, err
   }
 
   t := template.Must(template.New("config").Parse(wgConfigTemplate))
 
   err = t.Execute(configFile, wgInterface)
   if err != nil {
-    return err
+    return nil, err
   }
 
   configFile.Chmod(0600)
-  return nil
+
+  result, err := wg(nil, "setconf", wgInterface.Name, "/etc/wireguard/" + wgInterface.Name + ".conf")
+  if err != nil {
+    return nil, fmt.Errorf("error configuring wireguard interface: %s", err.Error())
+  }
+  return result, nil
 }
 
 func IsWgInterfaceWellConfigured(wgInterface Interface) (bool) {

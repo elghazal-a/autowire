@@ -12,7 +12,6 @@ import (
   "flag"
   "github.com/hashicorp/consul/api"
   "github.com/geniousphp/autowire/wireguard"
-  "github.com/geniousphp/autowire/wg_quick"
   "github.com/geniousphp/autowire/ifconfig"
   "github.com/geniousphp/autowire/util"
 )
@@ -166,7 +165,7 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
           return nil
         } else {
           fmt.Println("My interface is not well configured")
-          _, err = wg_quick.StopInterface(config.WGInterfaceName)
+          _, err = ifconfig.StopWGInterface(config.WGInterfaceName)
           if(err != nil){
             return err
           }
@@ -176,11 +175,11 @@ func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string,
 
       } else {
         fmt.Println("Will bring up my wg interface")
-        err = wireguard.ConfigureInterface(newWgInterface)
+        _, err = ifconfig.StartWGInterface(newWgInterface.Name, newWgInterface.Address)
         if(err != nil){
           return err
         }
-        _, err = wg_quick.StartInterface(config.WGInterfaceName)
+        _, err = wireguard.ConfigureInterface(newWgInterface)
         if(err != nil){
           return err
         }

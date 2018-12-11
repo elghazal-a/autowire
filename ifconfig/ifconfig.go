@@ -3,10 +3,31 @@ package ifconfig
 import (
   "fmt"
   "net"
-
+  "io"
+  "os/exec"
+  "bytes"
 )
 
 
+func ip(stdin io.Reader, arg ...string) ([]byte, error) {
+  path, err := exec.LookPath("ip")
+  if err != nil {
+    return nil, fmt.Errorf("ip command is not available in your PATH")
+  }
+
+  cmd := exec.Command(path, arg...)
+
+  cmd.Stdin = stdin
+  var buf bytes.Buffer
+  cmd.Stderr = &buf
+  output, err := cmd.Output()
+
+  if err != nil {
+    return nil, fmt.Errorf("%s - %s", err.Error(), buf.String())
+  }
+  return output, nil
+
+}
 
 func GetIpOfIf(interfaceName string) (string, error) {
   ifaces, err := net.Interfaces()
@@ -77,4 +98,30 @@ func IsInterfaceStarted(interfaceName string) (bool, error){
   }
   return false, nil
 }
+
+
+func StartWGInterface(wgInterfaceName string, wgInterfaceAddr string) ([]byte, error) {
+  result, err := ip(nil, "link", "add", "dev", wgInterfaceName, "type", "wireguard")
+  if err != nil {
+    return nil, fmt.Errorf("error adding wireguard interface: %s", err.Error())
+  }
+  result, err = ip(nil, "address", "add", "dev", wgInterfaceName, wgInterfaceAddr)
+  if err != nil {
+    return nil, fmt.Errorf("error adding ip address to wireguard interface: %s", err.Error())
+  }
+  result, err = ip(nil, "link", "set", "up", "dev", wgInterfaceName)
+  if err != nil {
+    return nil, fmt.Errorf("error bringing up wireguard interface: %s", err.Error())
+  }
+  return result, nil
+}
+
+func StopWGInterface(wgInterfaceName string) ([]byte, error) {
+  result, err := ip(nil, "link", "delete", "dev", wgInterfaceName)
+  if err != nil {
+    return nil, fmt.Errorf("error bringing down wireguard interface: %s", err.Error())
+  }
+  return result, nil
+}
+
 
