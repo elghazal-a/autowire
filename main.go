@@ -360,7 +360,7 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
       WaitIndex: waitIndex,
     }
     fmt.Println("Will watch consul kv prefix in blocking query now", waitIndex)
-    kvpairsNodes, meta, err := ConsulKV.List(config.LongKVPrefix + "nodes", &opts)
+    kvpairsNodes, meta, err := ConsulKV.List(config.LongKVPrefix + "nodes/", &opts)
     if err != nil {
       // Prevent backend errors from consuming all resources.
       log.Fatal(err)
@@ -368,14 +368,17 @@ func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[
       continue
     }
     for _, kvpNode := range kvpairsNodes {
-      physicalIpAddr := strings.Split(kvpNode.Key, "/")[3]
-      field := strings.Split(kvpNode.Key, "/")[4]
-      value := string(kvpNode.Value[:])
-      if _, ok := newPeers[physicalIpAddr]; !ok {
-        newPeers[physicalIpAddr] = make(map[string]string)
-        newPeers[physicalIpAddr]["endpoint"] = physicalIpAddr
+      var splittedKey = strings.Split(kvpNode.Key, "/")
+      if(len(splittedKey) == 5 && splittedKey[4] != ""){
+        physicalIpAddr := strings.Split(kvpNode.Key, "/")[3]
+        field := strings.Split(kvpNode.Key, "/")[4]
+        value := string(kvpNode.Value[:])
+        if _, ok := newPeers[physicalIpAddr]; !ok {
+          newPeers[physicalIpAddr] = make(map[string]string)
+          newPeers[physicalIpAddr]["endpoint"] = physicalIpAddr
+        }
+        newPeers[physicalIpAddr][field] = value
       }
-      newPeers[physicalIpAddr][field] = value
     }
     newPeerschan <- newPeers
 
