@@ -1,522 +1,186 @@
 package main
 
 import (
-  "fmt"
-  "net"
-  "log"
-  "os"
-  "io/ioutil"
-  "time"
-  "strconv"
-  "strings"
   "flag"
-  "os/exec"
-  "bytes"
-  "github.com/hashicorp/consul/api"
+  "fmt"
+  backendModule "github.com/geniousphp/autowire/backends"
   "github.com/geniousphp/autowire/wireguard"
-  "github.com/geniousphp/autowire/ifconfig"
   "github.com/geniousphp/autowire/util"
+  "log"
+  "net"
+  "sort"
+  "strings"
 )
 
 func main() {
   flag.Parse()
   if err := initConfig(); err != nil {
-    log.Fatal(err.Error())
-  }
-  log.Print("Starting Autowire")
-
-  physicalIpAddr, err := getPhysicalIpAddr()
-  if err != nil {
-    log.Fatal(err)
-  }
-  if physicalIpAddr == "" {
-    log.Fatal("Error while detecting network interface or Ip Address")
+    log.Fatal("FATAL: ", err.Error())
   }
 
-  privKey, pubKey, err := initWgKeys()
+  // Backend init
+  b, err := backendFactory()
   if err != nil {
-    log.Fatal(err)
+    log.Fatal("FATAL: ", err)
   }
 
-  conf := api.DefaultConfig()
-  ConsulClient, err := api.NewClient(conf)
-  if err != nil {
-    log.Fatal(err)
-  }
-  err = initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
+  newWgInterface, err := initialize(b)
   if err != nil {
     log.Fatal(err)
   }
 
-  monitorPeers(ConsulClient, physicalIpAddr)
-}
+  b.Monitor(config.CS_FullKVPrefix, *newWgInterface)
 
-
-func initWgKeys() (string, string, error) {
-  wgInterfaceConfigFolder := config.WGConfigFolder + "/" + config.WGInterfaceName
-  if _, err := os.Stat(wgInterfaceConfigFolder + "/private"); os.IsNotExist(err) {
-    err := os.MkdirAll(wgInterfaceConfigFolder, 0700)
-
-    if err != nil {
-      return "", "", err
-    }
-
-    privKey, err := wireguard.Genkey()
-    if err != nil {
-      return "", "", err
-    }
-
-    err = ioutil.WriteFile(wgInterfaceConfigFolder + "/private", privKey, 0600)
-    if err != nil {
-      return "", "", err
-    }
-
-  }
-
-  privKey, err := ioutil.ReadFile(wgInterfaceConfigFolder + "/private")
-  if err != nil {
-    return "", "", err
-  }
-
-  pubKey, err := wireguard.ExtractPubKey(privKey)
-  if err != nil {
-    return "", "", err
-  }
-
-  return strings.TrimSuffix(string(privKey[:]), "\n"), strings.TrimSuffix(string(pubKey[:]), "\n"), nil
-}
-
-func getPhysicalIpAddr() (string, error) {
-  var myInet string
-  if(config.InterfaceName == ""){
-    inet, err := ifconfig.GetFirstIpOfFirtIf()
-    if err != nil {
-      return "", err
-    }
-    myInet = inet
-  } else {
-    inet, err := ifconfig.GetIpOfIf(config.InterfaceName)
-    if err != nil {
-      return "", err
-    }
-    myInet = inet
-  }
-
-  ipAddr, _, err := net.ParseCIDR(myInet)
-  if err != nil {
-    return "", err
-  }
-  return ipAddr.String(), nil
 }
 
 
 
-func initialize(ConsulClient *api.Client, physicalIpAddr string, privKey string, pubKey string) error{
-  _, wgIpNet, err := net.ParseCIDR(config.WGRange)
+func initialize(backend backendModule.Backend) (*wireguard.Interface, error) {
+  if err := backend.Lock(config.CS_FullKVPrefix, config.WG_EndpointIP); err != nil {
+    return nil, err
+  }
+  defer backend.Unlock()
+
+  var shouldConfigureWG bool = false 
+
+  peers, err := backend.GetPeers(config.CS_FullKVPrefix)
   if err != nil {
-    return err
+    return nil, err
   }
 
-  var ConsulKV *api.KV
-  ConsulKV = ConsulClient.KV()
 
-  kvpairsWgRange, _, err := ConsulKV.Get(config.LongKVPrefix + "range", nil)
-  if err != nil {
-    return err
-  }
-  if kvpairsWgRange == nil || string(kvpairsWgRange.Value[:]) != config.WGRange {
-    log.Println("The wireguard IP range doesn't exist, willing to create it right now")
-    _, err := ConsulKV.Put(&api.KVPair{Key: config.LongKVPrefix + "range", Value: []byte(config.WGRange)}, nil)
-    if err != nil {
-      return err
+  if config.WG_IP != "" { //WG_IP is set, this is like a pet server
+    if indexPeer := util.IsIPUsed(peers, config.WG_IP); indexPeer >= 0 { //WG_IP is already used
+      if !peers[indexPeer].IsEndpointIPDefined() { //WG_IP is used by another device
+        return nil, fmt.Errorf("The WG_IP=%s is already used by another client", config.WG_IP)
+      } else{
+        if !peers[indexPeer].HasSameEndpointIP(config.WG_EndpointIP) { //WG_IP is used by an other server
+          return nil, fmt.Errorf("The WG_IP=%s is already used by another server %s", peers[indexPeer].GetIP(), peers[indexPeer].GetEndpointIP())
+        } else { //WG_IP is used by the current server
+          shouldConfigureWG = true
+        }
+      }
+    } else { //The WG_IP is not used
+      if indexPeer := util.IsEndpointIPExist(peers, config.WG_EndpointIP); indexPeer >= 0 { //WG_EndpointIP already registred
+        return nil, fmt.Errorf("The current WG_EndpointIP=%s is already registred with another WG_IP=%s", config.WG_EndpointIP, peers[indexPeer].GetIP())
+      } else{ //WG_EndpointIP is not registred
+        shouldConfigureWG = true
+      }
     }
-
-  }
-
-
-  myWgConfigMap := make(map[string]string)
-  myWgConfigKVPairs, _, err := ConsulKV.List(config.LongKVPrefix + "nodes/" + physicalIpAddr, nil)
-  if err != nil {
-    return err
-  }
-  for _, myWgConfigKVPair := range myWgConfigKVPairs {
-    myWgConfigMap[myWgConfigKVPair.Key[strings.LastIndex(myWgConfigKVPair.Key, "/") + 1:]] = string(myWgConfigKVPair.Value[:])
-  }
-
-  if myWgConfigKVPairs != nil {
-    fmt.Println("I already picked wg ip and registred it into KV", myWgConfigMap["ip"])
-
-    if(wgIpNet.Contains(net.ParseIP(myWgConfigMap["ip"])) &&
-      myWgConfigMap["port"] == strconv.Itoa(config.WGPort) &&
-      myWgConfigMap["pubkey"] == pubKey &&
-      myWgConfigMap["allowedips"] == myWgConfigMap["ip"] + "/32" + config.WGAllowedIPs &&
-      myWgConfigMap["postup"] == config.WGPostUp) {
-
-      fmt.Println("My registred configurations are consistent")
-
-      started, err := ifconfig.IsInterfaceStarted(config.WGInterfaceName)
+  } else {//WG_IP is not set, this is like a cattle server
+    if indexPeer := util.IsEndpointIPExist(peers, config.WG_EndpointIP); indexPeer >= 0 && peers[indexPeer].IP != nil { //WG_EndpointIP already registred
+      config.WG_IP = peers[indexPeer].IP.String()
+      shouldConfigureWG = true
+    } else{ //pick unused IP
+      log.Print("INFO: Picking unused IP from the range=", config.WG_Range)
+      _, wgRangeIPNet, err := net.ParseCIDR(config.WG_Range)
       if err != nil {
-        return err
+        return nil, err
       }
-      maskBits, _ := wgIpNet.Mask.Size()
-      newWgInterface := wireguard.Interface{
-        Name: config.WGInterfaceName, 
-        Address: fmt.Sprintf("%s/%d", myWgConfigMap["ip"], maskBits), 
-        ListenPort: config.WGPort, 
-        PrivateKey: privKey,
-        PostUp: config.WGPostUp,
-      }
-      if(started){
-        fmt.Println("I already started my wg interface")
+      wgIPStart := wgRangeIPNet.IP
+      util.IncIP(wgIPStart) //Skip IP Network
 
-        if(wireguard.IsWgInterfaceWellConfigured(newWgInterface)){
-          fmt.Println("My interface is well configured")
-        } else {
-          fmt.Println("My interface is not well configured")
-          _, err = ifconfig.StopWGInterface(config.WGInterfaceName)
-          if(err != nil){
-            return err
-          }
-          return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
-        }
-      } else {
-        fmt.Println("Will bring up my wg interface")
-        _, err = ifconfig.StartWGInterface(newWgInterface.Name, newWgInterface.Address)
-        if(err != nil){
-          return err
-        }
-        _, err = wireguard.ConfigureInterface(newWgInterface)
-        if(err != nil){
-          return err
-        }
-        return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
+      //The loop goes over all ips in the network
+      for myFutureWG_IP := wgIPStart; wgRangeIPNet.Contains(myFutureWG_IP); util.IncIP(myFutureWG_IP) {
+        if indexPeer := util.IsIPUsed(peers, myFutureWG_IP.String()); indexPeer < 0 {
+          config.WG_IP = myFutureWG_IP.String()
+          break;
+        } 
+      }
+      if config.WG_IP == "" {
+        return nil, fmt.Errorf("All IPs are used")
+      } else{
+        shouldConfigureWG = true
       }
 
-      // Whether the interface was started or has just started, run PostUp, it should be idempotent
-      fmt.Println("Running PostUp")
-      if(newWgInterface.PostUp != ""){
-        cmd := exec.Command("sh", "-c", newWgInterface.PostUp)
-        var buf bytes.Buffer
-        cmd.Stderr = &buf
-        output, err := cmd.Output()
-        if(err != nil){
-          return fmt.Errorf("error running postUp commands: %s", err.Error(), buf.String())
-        }
-        fmt.Println(string(output[:]))
-      }
-      return nil
-
-    } else {
-      fmt.Println("My registred configurations are not consistent")
-      _, err := ConsulKV.DeleteTree(config.LongKVPrefix + "nodes/" + physicalIpAddr, nil)
-      if err != nil {
-        return err
-      }
-      return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
     }
-    
+  }
 
-  } else {
-    fmt.Println("I didn't yet picked an IP from RANGE")
 
-    opts := &api.LockOptions{
-      Key:        config.LongKVPrefix + "pick-ip-lock",
-      Value:      []byte(physicalIpAddr),
-      SessionOpts: &api.SessionEntry{
-        Behavior: "release",
-        TTL: "10s",
+  wireguardConfig := wireguard.Configuration{}
+
+  if(shouldConfigureWG){
+    // configure wireguard 
+    privKey, pubKey, err := wireguard.InitWgKeys(config.WG_InterfaceConfigFolder)
+    if err != nil {
+      return nil, err
+    }
+
+    var mask string
+    if(config.WG_Relay){
+      mask = strings.Split(config.WG_Range, "/")[1]
+    } else{
+      mask = "32"
+    }
+
+
+
+    wireguardConfig = wireguard.Configuration{
+      Interface: wireguard.Interface{
+        Name          : config.WG_InterfaceName,
+        Address       : fmt.Sprintf("%s/%s", config.WG_IP, mask), 
+        ListenPort    : config.WG_Port, 
+        PublicKey     : pubKey,
+        PrivateKey    : privKey,
+        PostUp        : config.WG_PostUp,
+        PostDown      : config.WG_PostDown,
       },
-    }
-    lock, err := ConsulClient.LockOpts(opts)
-    if err != nil {
-      return err
+      Peers: peers,
     }
 
-    stopCh := make(chan struct{})
-    _, err = lock.Lock(stopCh)
-    if err != nil {
-      return err
-    }
-    //Resource locked
-
-
-    //get all the picked ip
-    kvpairsNodes, _, err := ConsulKV.List(config.LongKVPrefix + "nodes", &api.QueryOptions{AllowStale: false, RequireConsistent: true, UseCache: false})
-    if err != nil {
-      return err
-    }
-    var usedWgIps []string
-    for _, kvpNode := range kvpairsNodes {
-      usedWgIps = append(usedWgIps, string(kvpNode.Value[:]))
+    if _, err := wireguard.ConfigureWireguard(wireguardConfig); err != nil {
+      return nil, err
     }
 
-
-    wgIpStart := wgIpNet.IP
-    //let's pick spare ip
-    util.IncIp(wgIpStart) //Skip IP Network
-
-    //The loop goes over all ips in the network
-    for myFutureWgIp := wgIpStart; wgIpNet.Contains(myFutureWgIp); util.IncIp(myFutureWgIp) {
-      if(util.SliceContains(usedWgIps, myFutureWgIp.String())){
-        fmt.Println(myFutureWgIp.String(), "exist, skipping...")
-      } else {
-        fmt.Println("Found IP", myFutureWgIp)
-        //save it to /wireguard/wg0/nodes/physicalIpAddr
-        
-        nodeKVTxnOps := api.KVTxnOps{
-          &api.KVTxnOp{
-            Verb:    api.KVSet,
-            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/ip",
-            Value:   []byte(myFutureWgIp.String()),
-          },
-          &api.KVTxnOp{
-            Verb:    api.KVSet,
-            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/pubkey",
-            Value:   []byte(pubKey),
-          },
-          &api.KVTxnOp{
-            Verb:    api.KVSet,
-            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/port",
-            Value:   []byte(strconv.Itoa(config.WGPort)),
-          },
-          &api.KVTxnOp{
-            Verb:    api.KVSet,
-            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/allowedips",
-            Value:   []byte(myFutureWgIp.String() + "/32" + config.WGAllowedIPs),
-          },
-          &api.KVTxnOp{
-            Verb:    api.KVSet,
-            Key:     config.LongKVPrefix + "nodes/" + physicalIpAddr + "/postup",
-            Value:   []byte(config.WGPostUp),
-          },
-        }
-        ok, _, _, err := ConsulKV.Txn(nodeKVTxnOps, nil)
-        lock.Unlock()  //Unlock Resource
-        if err != nil {
-          return err
-        }
-        if !ok {
-          return fmt.Errorf("Transaction was rolled back")
-        }
-
-        // TODO: Check that ip we didn't pick broadcast IP
-        // Check if there is no free ip left
-        // if(util.SliceContains(usedWgIps, myFutureWgIp.String())){
-        //   return fmt.Errorf("There is no spare IP left in %s CIDR", config.WGRange)
-        // }
-
-        return initialize(ConsulClient, physicalIpAddr, privKey, pubKey)
-
-        break;
-      }
+    allowedips := []string{}
+    if config.WG_AllowedIPs != "" {
+      allowedips = strings.Split(config.WG_AllowedIPs, ",")
     }
-  }
-
-
-  return nil
-}
-
-
-func monitorPeers(ConsulClient *api.Client, physicalIpAddr string) {
-  stopMonitorKvPrefixchan := make(chan bool)
-  stopMonitorNodesChan := make(chan bool)
-  newPeerschan := make(chan map[string]map[string]string)
-  newNodesChan := make(chan map[string]string)
-  go monitorKvPrefix(ConsulClient, newPeerschan, stopMonitorKvPrefixchan)
-  go monitorNodes(ConsulClient, physicalIpAddr, newNodesChan, stopMonitorNodesChan)
-
-  for {
-    select {
-      case <-stopMonitorKvPrefixchan:
-        fmt.Println("monitorKvPrefix goroutine stopped")
-      case newPeers := <-newPeerschan:
-        fmt.Println("received new peers from monitorKvPrefix goroutine")
-        configureWgPeers(physicalIpAddr, newPeers)
-      case <-stopMonitorNodesChan:
-        fmt.Println("monitorNodes goroutine stopped")
-      case nodesPhysicalIpAddr := <-newNodesChan:
-        fmt.Println("received new nodes")
-        removeLeftNodes(ConsulClient, nodesPhysicalIpAddr)
-
-    }
-  }
-  
-}
-
-func monitorKvPrefix(ConsulClient *api.Client, newPeerschan chan map[string]map[string]string, stopMonitorKvPrefixChan chan bool) {
-  var ConsulKV *api.KV
-  ConsulKV = ConsulClient.KV()
-
-  var newPeers map[string]map[string]string
-  var waitIndex uint64
-  waitIndex = 0
-
-  for {
-    newPeers = make(map[string]map[string]string)
-    opts := api.QueryOptions{
-      AllowStale: false, 
-      RequireConsistent: true, 
-      UseCache: false,
-      WaitIndex: waitIndex,
-    }
-    fmt.Println("Will watch consul kv prefix in blocking query now", waitIndex)
-    kvpairsNodes, meta, err := ConsulKV.List(config.LongKVPrefix + "nodes/", &opts)
-    if err != nil {
-      // Prevent backend errors from consuming all resources.
-      log.Fatal(err)
-      time.Sleep(time.Second * 2)
-      continue
-    }
-    for _, kvpNode := range kvpairsNodes {
-      var splittedKey = strings.Split(kvpNode.Key, "/")
-      if(len(splittedKey) == 5 && splittedKey[4] != ""){
-        physicalIpAddr := strings.Split(kvpNode.Key, "/")[3]
-        field := strings.Split(kvpNode.Key, "/")[4]
-        value := string(kvpNode.Value[:])
-        if _, ok := newPeers[physicalIpAddr]; !ok {
-          newPeers[physicalIpAddr] = make(map[string]string)
-          newPeers[physicalIpAddr]["endpoint"] = physicalIpAddr
-        }
-        newPeers[physicalIpAddr][field] = value
-      }
-    }
-    newPeerschan <- newPeers
-
-    waitIndex = meta.LastIndex
-  }
-  stopMonitorKvPrefixChan <- true
-}
-
-func configureWgPeers(myPhysicalIpAddr string, newPeers map[string]map[string]string) {
-  peers, err := wireguard.GetPeers(config.WGInterfaceName)
-  if err != nil {
-    log.Fatal(err)
-    return
-  }
-  util.PrintPeersMap(peers)
-  util.PrintPeersMap(newPeers)
-
-  for physicalIpAddrKey, peer := range peers {
-    
-    if _, ok := newPeers[physicalIpAddrKey]; !ok { // peer doesn't exit in newPeers anymore
-      fmt.Println("Removing a peer that doesn't exist anymore")
-      _, err = wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
-      if(err != nil){
-        log.Fatal(err)
-      }
-    } else {
-      if(peer["pubkey"] != newPeers[physicalIpAddrKey]["pubkey"]){
-        fmt.Println("Reconfiguring a Peer that has same endpoint and different public key")
-        _, err = wireguard.RemovePeer(config.WGInterfaceName, peer["pubkey"])
-        if(err != nil){
-          log.Fatal(err)
-        }
-        _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
-        if(err != nil){
-          log.Fatal(err)
-        }
-      } else {
-        if(!util.IsTheSameAllowedips(peer["allowedips"], newPeers[physicalIpAddrKey]["allowedips"]) || 
-          peer["port"] != newPeers[physicalIpAddrKey]["port"] || 
-          peer["endpoint"] != newPeers[physicalIpAddrKey]["endpoint"]){
-
-          fmt.Println("Reconfiguring a Peer that changes its params")
-          _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
-          if(err != nil){
-            log.Fatal(err)
-          }
-        }
-      }
-    }
-  }
-
-  for physicalIpAddrKey, peer := range newPeers {
-    if(myPhysicalIpAddr == physicalIpAddrKey){ // If physicalIpAddrKey is my ip, skip it
-      continue
-    }
-
-    if _, ok := peers[physicalIpAddrKey]; !ok { // new peer doesn't exist in peers
-      fmt.Println("Adding New Peer")
-      _, err = wireguard.ConfigurePeer(config.WGInterfaceName, peer)
-      if(err != nil){
-        log.Fatal(err)
-      }
-    }
-  }
-
-}
-
-
-
-func monitorNodes(ConsulClient *api.Client, physicalIpAddr string, newNodesChan chan map[string]string, stopMonitorNodesChan chan bool) {
-  opts := &api.LockOptions{
-    Key:        config.LongKVPrefix + "monitor-nodes-lock",
-    Value:      []byte(physicalIpAddr),
-    SessionOpts: &api.SessionEntry{
-      Behavior: "release",
-      TTL: "10s",
-    },
-  }
-  lock, err := ConsulClient.LockOpts(opts)
-  if err != nil {
-    log.Fatal(err)
-  }
-  stopCh := make(chan struct{})
-  _, err = lock.Lock(stopCh)
-  if err != nil {
-    log.Fatal(err)
-  }
-
-  var ConsulCatalog *api.Catalog
-  ConsulCatalog = ConsulClient.Catalog()
-  var waitIndex uint64
-  waitIndex = 0
-  for {
-    opts := api.QueryOptions{
-      AllowStale: false, 
-      RequireConsistent: true, 
-      UseCache: false,
-      WaitIndex: waitIndex,
-    }
-    fmt.Println("Will watch consul nodes", waitIndex)
-    listNodes, meta, err := ConsulCatalog.Nodes(&opts)
-    if err != nil {
-      // Prevent backend errors from consuming all resources.
-      log.Fatal(err)
-      time.Sleep(time.Second * 2)
-      continue
-    }
-
-    newNodes := make(map[string]string)
-    for _, node := range listNodes {
-      newNodes[node.Address] = node.ID
-    }
-
-    newNodesChan <- newNodes
-
-    waitIndex = meta.LastIndex
-  }
-  stopMonitorNodesChan <- true
-}
-
-func removeLeftNodes(ConsulClient *api.Client, nodesPhysicalIpAddr map[string]string) {
-  var ConsulKV *api.KV
-  ConsulKV = ConsulClient.KV()
-
-  peers, err := wireguard.GetPeers(config.WGInterfaceName)
-  if err != nil {
-    log.Fatal(err)
-    return
-  }
-  for physicalIpAddrKey, _ := range peers {
-    if _, ok := nodesPhysicalIpAddr[physicalIpAddrKey]; !ok { //Peer doesn't exist in Consul Catalog anymore
-      fmt.Println("Release node IP from the pool")
-      _, err := ConsulKV.DeleteTree(config.LongKVPrefix + "nodes/" + physicalIpAddrKey, nil)
+    allowedips = append(allowedips, fmt.Sprintf("%s/%s", config.WG_IP, "32"))
+    if(config.WG_Relay){
+      _, rangeIPNet, err := net.ParseCIDR(config.WG_Range)
       if err != nil {
-        log.Fatal(err)
+        return nil, err
       }
+      allowedips = append(allowedips, rangeIPNet.String())
     }
+    sort.Strings(allowedips)
+
+    newPeer := wireguard.Peer{
+      PublicKey     : pubKey,
+      IP            : net.ParseIP(config.WG_IP),
+      EndpointIP    : net.ParseIP(config.WG_EndpointIP), 
+      EndpointPort  : config.WG_Port, 
+      AllowedIPs    : strings.Join(allowedips, ","),
+    }
+
+
+    //Add my interface as Peer in the Backend
+    if err := backend.AddPeer(config.CS_FullKVPrefix, wireguardConfig.Interface, newPeer); err != nil {
+      return nil, err
+    }
+
+
+
+  }
+
+
+  return &wireguardConfig.Interface, nil
+}
+
+
+
+func backendFactory() (backendModule.Backend, error) {
+  if config.AW_Backend == "consul" {
+    b, err := backendModule.NewConsulBackend(config.CS_Address)
+    if err != nil {
+      return nil, err
+    }
+    return b, nil
+  } else{
+    return nil, fmt.Errorf("Unsupported Backend. Available backends: [consul]")
   }
 }
+
 
 

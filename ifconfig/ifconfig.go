@@ -50,34 +50,7 @@ func GetIpOfIf(interfaceName string) (string, error) {
       }
     }
   }
-  return "", fmt.Errorf("The network interface %s not found or doesn't have any ip address", interfaceName)
-}
-
-func GetFirstIpOfFirtIf() (string, error) {
-  ifaces, err := net.Interfaces()
-  if err != nil {
-    return "", err
-  }
-
-  if len(ifaces) <= 0 {
-    return "", fmt.Errorf("No network interface found")
-  }
-
-  for _, iface := range ifaces {
-    if(iface.Name == "lo") {
-      continue
-    }
-    addrs, err := iface.Addrs()
-    if err != nil {
-      return "", err
-    }
-    if len(addrs) > 0 {
-      return addrs[0].String(), err
-    }
-    
-  }
-
-  return "", fmt.Errorf("No network interface or ip address found")
+  return "", fmt.Errorf("The network interface %s doesn't exist or doesn't have any IP address", interfaceName)
 }
 
 
@@ -99,29 +72,5 @@ func IsInterfaceStarted(interfaceName string) (bool, error){
   return false, nil
 }
 
-
-func StartWGInterface(wgInterfaceName string, wgInterfaceAddr string) ([]byte, error) {
-  result, err := ip(nil, "link", "add", "dev", wgInterfaceName, "type", "wireguard")
-  if err != nil {
-    return nil, fmt.Errorf("error adding wireguard interface: %s", err.Error())
-  }
-  result, err = ip(nil, "address", "add", "dev", wgInterfaceName, wgInterfaceAddr)
-  if err != nil {
-    return nil, fmt.Errorf("error adding ip address to wireguard interface: %s", err.Error())
-  }
-  result, err = ip(nil, "link", "set", "up", "dev", wgInterfaceName)
-  if err != nil {
-    return nil, fmt.Errorf("error bringing up wireguard interface: %s", err.Error())
-  }
-  return result, nil
-}
-
-func StopWGInterface(wgInterfaceName string) ([]byte, error) {
-  result, err := ip(nil, "link", "delete", "dev", wgInterfaceName)
-  if err != nil {
-    return nil, fmt.Errorf("error bringing down wireguard interface: %s", err.Error())
-  }
-  return result, nil
-}
 
 

@@ -3,22 +3,17 @@ package wireguard
 import (
   "bytes"
   "fmt"
+  "github.com/geniousphp/autowire/ifconfig"
   "io"
-  "strings"
-  "strconv"
+  "io/ioutil"
+  "log"
   "os"
   "os/exec"
+  "strings"
+  "strconv"
   "text/template"
-  "github.com/geniousphp/autowire/ifconfig"
 )
 
-type Interface struct {
-  Name string
-  Address string
-  ListenPort int
-  PrivateKey string
-  PostUp string
-}
 
 
 func wg(stdin io.Reader, arg ...string) ([]byte, error) {
@@ -41,7 +36,27 @@ func wg(stdin io.Reader, arg ...string) ([]byte, error) {
 
 }
 
-func Genkey() ([]byte, error) {
+func wgQuick(stdin io.Reader, arg ...string) ([]byte, error) {
+  path, err := exec.LookPath("wg-quick")
+  if err != nil {
+    return nil, fmt.Errorf("wg-quick command is not available in your PATH")
+  }
+
+  cmd := exec.Command(path, arg...)
+
+  cmd.Stdin = stdin
+  var buf bytes.Buffer
+  cmd.Stderr = &buf
+  output, err := cmd.Output()
+
+  if err != nil {
+    return nil, fmt.Errorf("%s - %s", err.Error(), buf.String())
+  }
+  return output, nil
+
+}
+
+func genkey() ([]byte, error) {
   result, err := wg(nil, "genkey")
   if err != nil {
     return nil, fmt.Errorf("error generating the private key for wireguard: %s", err.Error())
@@ -49,7 +64,7 @@ func Genkey() ([]byte, error) {
   return result, nil
 }
 
-func ExtractPubKey(privateKey []byte) ([]byte, error) {
+func extractPubKey(privateKey []byte) ([]byte, error) {
   stdin := bytes.NewReader(privateKey)
   result, err := wg(stdin, "pubkey")
   if err != nil {
@@ -58,43 +73,113 @@ func ExtractPubKey(privateKey []byte) ([]byte, error) {
   return result, nil
 }
 
+func InitWgKeys(wgInterfaceConfigFolder string) (string, string, error) {
+  if _, err := os.Stat(wgInterfaceConfigFolder + "/private"); os.IsNotExist(err) {
+    err := os.MkdirAll(wgInterfaceConfigFolder, 0700)
 
-func ConfigureInterface(wgInterface Interface) ([]byte, error) {
-  configFile, err := os.Create("/etc/wireguard/" + wgInterface.Name + ".conf")
-  if err != nil {
-    return nil, err
+    if err != nil {
+      return "", "", err
+    }
+
+    privKey, err := genkey()
+    if err != nil {
+      return "", "", err
+    }
+
+    err = ioutil.WriteFile(wgInterfaceConfigFolder + "/private", privKey, 0600)
+    if err != nil {
+      return "", "", err
+    }
+
   }
 
-  t := template.Must(template.New("config").Parse(wgConfigTemplate))
-
-  err = t.Execute(configFile, wgInterface)
+  privKey, err := ioutil.ReadFile(wgInterfaceConfigFolder + "/private")
   if err != nil {
-    return nil, err
+    return "", "", err
   }
 
-  configFile.Chmod(0600)
-
-  result, err := wg(nil, "setconf", wgInterface.Name, "/etc/wireguard/" + wgInterface.Name + ".conf")
+  pubKey, err := extractPubKey(privKey)
   if err != nil {
-    return nil, fmt.Errorf("error configuring wireguard interface: %s", err.Error())
+    return "", "", err
   }
-  return result, nil
+
+  return strings.TrimSuffix(string(privKey[:]), "\n"), strings.TrimSuffix(string(pubKey[:]), "\n"), nil
 }
 
-func IsWgInterfaceWellConfigured(wgInterface Interface) (bool) {
-  // Check consistency with ip addr show dev wg0 (IP Address)
-  actualIpAddr, _ := ifconfig.GetIpOfIf(wgInterface.Name)
-  if(actualIpAddr != wgInterface.Address){
+
+func ConfigureWireguard(wgConfig Configuration) ([]byte, error) {
+  isWGInterfaceStarted, err := ifconfig.IsInterfaceStarted(wgConfig.Interface.Name)
+  if err != nil {
+    return nil, err
+  }
+
+  if isWGInterfaceStarted {
+    log.Printf("INFO: WireGuard=%s interface is already up", wgConfig.Interface.Name)
+    if isInterfaceAlreadyConfigured(wgConfig.Interface) {
+      log.Print("INFO: WireGuard interface is already configured, skipping reconfiguration")
+    } else {
+      log.Print("INFO: Bringing Down WireGuard Interface because of configuration inconsistencies")
+      _, err := wgQuick(nil, "down", wgConfig.Interface.Name)
+      if err != nil {
+        return nil, fmt.Errorf("error Bringing Down the Wireguard Interface: %s", err.Error())
+      }
+    }
+  }
+
+
+  configFile, err := os.Create("/etc/wireguard/" + wgConfig.Interface.Name + ".conf")
+  if err != nil {
+    return nil, err
+  }
+  t := template.Must(template.New("config").Parse(WgConfigTemplate))
+  err = t.Execute(configFile, wgConfig)
+  if err != nil {
+    return nil, err
+  }
+  configFile.Chmod(0600)
+
+  isWGInterfaceStarted, err = ifconfig.IsInterfaceStarted(wgConfig.Interface.Name)
+  if err != nil {
+    return nil, err
+  }
+
+  if isWGInterfaceStarted {
+    log.Print("INFO: Syncing WireGuard Peers")
+    strip, _ := wgQuick(nil, "strip", wgConfig.Interface.Name)
+    stdin := bytes.NewReader(strip)
+    result, err := wg(stdin, "syncconf", wgConfig.Interface.Name, "/dev/stdin")
+    if err != nil {
+      return nil, fmt.Errorf("Error Syncing WireGuard Peers: %s", err.Error())
+    }
+    return result, nil
+
+  } else{
+    log.Print("INFO: Bringing Up WireGuard Interface")
+    result, err := wgQuick(nil, "up", wgConfig.Interface.Name)
+    if err != nil {
+      return nil, fmt.Errorf("Error Bringing Up the Wireguard Interface: %s", err.Error())
+    }
+    return result, nil
+  }
+}
+
+func isInterfaceAlreadyConfigured(wgInterface Interface) (bool) {
+  // Check consistency with .Address and "ip addr show dev wg0"
+  actualWGInterfaceAddress, _ := ifconfig.GetIpOfIf(wgInterface.Name)
+  if(actualWGInterfaceAddress != wgInterface.Address){
     return false
   }
 
-  // Check consistency with wg show wg0 (Port and Private Key)
+  // Check consistency with "wg show wg0"
   result, _ := wg(nil, "show", wgInterface.Name, "dump")
   currentWgConfigString := strings.Split(string(result[:]), "\n")[0]
-  // fmt.Println(currentWgConfigString)
   currentWgConfig := strings.Split(currentWgConfigString, "\t")
 
   if(currentWgConfig[0] != wgInterface.PrivateKey){
+    return false
+  }
+
+  if(currentWgConfig[1] != wgInterface.PublicKey){
     return false
   }
 
@@ -104,51 +189,6 @@ func IsWgInterfaceWellConfigured(wgInterface Interface) (bool) {
   }
 
   return true
-}
-
-func GetPeers(wgInterfaceName string) (map[string]map[string]string, error) {
-  result, err := wg(nil, "show", wgInterfaceName, "dump")
-  if err != nil {
-    return nil, fmt.Errorf("error getting peers list for wireguard: %s", err.Error())
-  }
-
-  peers := make(map[string]map[string]string)
-  wgPeersString := strings.Split(string(result[:]), "\n")
-  for i, wgPeerString := range wgPeersString {
-    if(i == 0) {
-      //Skip the fist line config which is interfacz config
-      continue
-    }
-    if(wgPeerString == "") {
-      //empty line, skip it
-      continue
-    }
-    currentWgConfig := strings.Split(wgPeerString, "\t")
-    physicalIpAddr := strings.Split(currentWgConfig[2], ":")[0]
-    peers[physicalIpAddr] = make(map[string]string)
-    peers[physicalIpAddr]["endpoint"] = physicalIpAddr
-    peers[physicalIpAddr]["port"] = strings.Split(currentWgConfig[2], ":")[1]
-    peers[physicalIpAddr]["pubkey"] = currentWgConfig[0]
-    peers[physicalIpAddr]["allowedips"] = currentWgConfig[3]
-  }
-
-  return peers, nil
-}
-
-func ConfigurePeer(wgInterfaceName string, peer map[string]string) ([]byte, error) {
-  result, err := wg(nil, "set", wgInterfaceName, "peer", peer["pubkey"], "endpoint", peer["endpoint"] + ":" + peer["port"], "allowed-ips", peer["allowedips"])
-  if err != nil {
-    return nil, fmt.Errorf("error configuring wg peer: %s", err.Error())
-  }
-  return result, nil
-}
-
-func RemovePeer(wgInterfaceName string, pubKey string) ([]byte, error) {
-  result, err := wg(nil, "set", wgInterfaceName, "peer", pubKey, "remove")
-  if err != nil {
-    return nil, fmt.Errorf("error removing wg peer: %s", err.Error())
-  }
-  return result, nil
 }
 
 
