@@ -10,5 +10,6 @@ type Backend interface {
 	Unlock()
 	GetPeers(location string) ([]wireguard.Peer, error)
 	AddPeer(location string, wgInterface wireguard.Interface, peer wireguard.Peer) (error)
-	Monitor(location string, wgInterface wireguard.Interface) ()
+	MonitorKv(location string, wgInterface wireguard.Interface) ()
+	MonitorNodes(location string, wgInterface wireguard.Interface) ()
 }

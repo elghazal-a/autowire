@@ -29,7 +29,10 @@ func main() {
     log.Fatal(err)
   }
 
-  b.Monitor(config.CS_FullKVPrefix, *newWgInterface)
+  b.MonitorKv(config.CS_FullKVPrefix, *newWgInterface)
+  if config.GC_Enable {
+    b.MonitorNodes(config.CS_FullKVPrefix, *newWgInterface)
+  }
 
 }
 

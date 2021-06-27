@@ -30,6 +30,7 @@ type Config struct {
   WG_AllowedIPs string
   WG_PostUp string
   WG_PostDown string
+  GC_Enable bool
 }
 
 var config Config
@@ -51,13 +52,14 @@ func init() {
   flag.StringVar(&config.WG_AllowedIPs, "wg-allowed-ips", "", "Wireguard Allowed IPs (comma separated cidr)")
   flag.StringVar(&config.WG_PostUp, "wg-post-up", "", "steps to be run after the wireguard interface is up")
   flag.StringVar(&config.WG_PostDown, "wg-post-down", "", "steps to be run after the wireguard interface is down")
+  flag.BoolVar(&config.GC_Enable, "gc-enable", false, "Enable peers garbage collection. Consul is the only node discovery supported. When disabled, you have to manually remove the left peers from the k/s")
 }
 
 
 func initConfig() error {
 
   if(config.AW_Version){
-    fmt.Println("Autowire v0.2")
+    fmt.Println("Autowire v0.2.1")
     os.Exit(0)
   }
 

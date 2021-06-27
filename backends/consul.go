@@ -127,14 +127,11 @@ func (cb *ConsulBackend) AddPeer(location string, wgInterface wireguard.Interfac
 }
 
 
-func (cb *ConsulBackend) Monitor(location string, wgInterface wireguard.Interface) {
+func (cb *ConsulBackend) MonitorKv(location string, wgInterface wireguard.Interface) {
   stopMonitorKvPrefixChan := make(chan bool)
-  stopMonitorNodesChan 		:= make(chan bool)
-  newPeersChan 						:= make(chan []wireguard.Peer)
-  newNodesChan 						:= make(chan []string)
+  newPeersChan            := make(chan []wireguard.Peer)
 
   go cb.monitorKvPrefix(location, newPeersChan, stopMonitorKvPrefixChan)
-  go cb.monitorNodes(location, wgInterface, newNodesChan, stopMonitorNodesChan)
 
   for {
     select {
@@ -142,21 +139,19 @@ func (cb *ConsulBackend) Monitor(location string, wgInterface wireguard.Interfac
         log.Print("INFO: monitorKvPrefix goroutine stopped")
       case newPeers := <-newPeersChan:
         log.Print("INFO: Received new peers from monitorKvPrefix goroutine")
-		    wireguardConfig := wireguard.Configuration{
-		      Interface: wgInterface,
-		      Peers: newPeers,
-		    }
-		    if _, err := wireguard.ConfigureWireguard(wireguardConfig); err != nil {
-		      log.Fatal(err)
-		    }
-      case <-stopMonitorNodesChan:
-        log.Print("INFO: monitorNodes goroutine stopped")
-      case newNodes := <-newNodesChan:
-        log.Print("INFO: received new nodes from monitorNodes goroutine")
-        cb.removeLeftPeers(location, newNodes)
+        wireguardConfig := wireguard.Configuration{
+          Interface: wgInterface,
+          Peers: newPeers,
+        }
+        if _, err := wireguard.ConfigureWireguard(wireguardConfig); err != nil {
+          log.Fatal(err)
+        }
     }
   }
 }
+
+
+
 
 func (cb *ConsulBackend) monitorKvPrefix(location string, newPeersChan chan []wireguard.Peer, stopMonitorKvPrefixChan chan bool) {
   ConsulKV := cb.client.KV()
@@ -219,6 +214,22 @@ func (cb *ConsulBackend) monitorKvPrefix(location string, newPeersChan chan []wi
 }
 
 
+func (cb *ConsulBackend) MonitorNodes(location string, wgInterface wireguard.Interface) {
+  stopMonitorNodesChan    := make(chan bool)
+  newNodesChan            := make(chan []string)
+
+  go cb.monitorNodes(location, wgInterface, newNodesChan, stopMonitorNodesChan)
+
+  for {
+    select {
+      case <-stopMonitorNodesChan:
+        log.Print("INFO: monitorNodes goroutine stopped")
+      case newNodes := <-newNodesChan:
+        log.Print("INFO: received new nodes from monitorNodes goroutine")
+        cb.removeLeftPeers(location, newNodes)
+    }
+  }
+}
 
 
 func (cb *ConsulBackend) monitorNodes(location string, wgInterface wireguard.Interface, newNodesChan chan []string, stopMonitorNodesChan chan bool) {
