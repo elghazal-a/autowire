@@ -1,13 +1,13 @@
 package backend
 
 import (
-	"encoding/json"
-	"fmt"
+  "encoding/json"
+  "fmt"
   "github.com/geniousphp/autowire/wireguard"
-	"github.com/hashicorp/consul/api"
-	"log"
-	"time"
-	"github.com/geniousphp/autowire/util"
+  "github.com/hashicorp/consul/api"
+  "log"
+  "time"
+  "github.com/geniousphp/autowire/util"
   "regexp"
 )
 
@@ -92,12 +92,12 @@ func (cb *ConsulBackend) GetPeers(location string) ([]wireguard.Peer, error) {
     isKeyPeer, _ := regexp.MatchString("^.+\\/peers\\/[0-9\\.]+$", consulPeer.Key)
 
     if(isKeyPeer){
-  		peer := wireguard.Peer{}
+      peer := wireguard.Peer{}
 
-  		err = json.Unmarshal(consulPeer.Value, &peer)
-  		if err != nil {
+      err = json.Unmarshal(consulPeer.Value, &peer)
+      if err != nil {
         log.Print("Error: Couldn't parse peer value for Key=", consulPeer.Key)
-  		} else {
+      } else {
         peers = append(peers, peer)
       }
     }
