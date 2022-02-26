@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 	"github.com/geniousphp/autowire/util"
+  "regexp"
 )
 
 
@@ -78,6 +79,7 @@ func (cb *ConsulBackend) GetPeers(location string) ([]wireguard.Peer, error) {
 		return nil, err
 	}
 
+
 	peers := []wireguard.Peer{}
 
 	if consulPeers == nil {
@@ -86,15 +88,19 @@ func (cb *ConsulBackend) GetPeers(location string) ([]wireguard.Peer, error) {
 
 
 	for _, consulPeer := range consulPeers {
-		peer := wireguard.Peer{}
 
-		err = json.Unmarshal(consulPeer.Value, &peer)
-		if err != nil {
-			return nil, err
-		}
+    isKeyPeer, _ := regexp.MatchString("^.+\\/peers\\/[0-9\\.]+$", consulPeer.Key)
 
+    if(isKeyPeer){
+  		peer := wireguard.Peer{}
 
-		peers = append(peers, peer)
+  		err = json.Unmarshal(consulPeer.Value, &peer)
+  		if err != nil {
+        log.Print("Error: Couldn't parse peer value for Key=", consulPeer.Key)
+  		} else {
+        peers = append(peers, peer)
+      }
+    }
 
 	}
 

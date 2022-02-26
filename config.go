@@ -59,7 +59,7 @@ func init() {
 func initConfig() error {
 
   if(config.AW_Version){
-    fmt.Println("Autowire v0.2.1")
+    fmt.Println("Autowire v0.2.2")
     os.Exit(0)
   }
 

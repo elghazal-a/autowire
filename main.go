@@ -26,7 +26,7 @@ func main() {
 
   newWgInterface, err := initialize(b)
   if err != nil {
-    log.Fatal(err)
+    log.Fatal("FATAL: ", err)
   }
 
   b.MonitorKv(config.CS_FullKVPrefix, *newWgInterface)
@@ -35,7 +35,6 @@ func main() {
   }
 
 }
-
 
 
 func initialize(backend backendModule.Backend) (*wireguard.Interface, error) {
